@@ -51,39 +51,57 @@ bool setup(BelaContext *context, void *userData)
     // set initial delay to 0.1 seconds on each side, for now.
     readPointerLeft = (writePointerLeft - (int)(0.1 * context->audioSampleRate) + delayBufferLeftChannel.size()) % delayBufferLeftChannel.size();
     readPointerRight = (writePointerRight - (int)(0.1 * context->audioSampleRate) + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
-    // TODO Express the 0.1 s delay as an offset from the write pointer (oldest sample) measured in samples.
-    // the more samples, the more delay
-    // gOffset = 0.1 * context->audioSampleRate;
 
     return true;
 }
 
 void render(BelaContext *context, void *userData)
 {
-    // read delay times from trimmers (L in input1, R in input2)
-    float delayLeft = ...;
-    float delayRight = ...;
-    int delayInSampsLeft = delayLeft * context->audioSampleRate;
-    int delayInSampsRight = delayRight * context->audioSampleRate;
-
     for(unsigned int n = 0; n < context->audioFrames; n++) {
+        // read delay times from trimmers (L in input1, R in input2)
+        float delayLeft = analogRead(context, n/2, 0);  // read in analog 0
+        float delayRight = analogRead(context, n/2, 1); // read in analog 1
+        int delayInSampsLeft = delayLeft * context->audioSampleRate;
+        int delayInSampsRight = delayRight * context->audioSampleRate;
+
+        // use modulo to browse circular buffers
+        readPointerLeft = (writePointerLeft - delayInSampsLeft + delayBufferLeftChannel.size()) % delayBufferLeftChannel.size();
+        readPointerRight = (writePointerRight - delayInSampsRight + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
+
+        // read feedback from trimmer
+        float feedback = analogRead(context, n/2, 2); // read in analog 2
+
+        // process input sample
         float in = gPlayer.process();
 
-        // TODO Read the output from the buffer, at the location expressed by the offset
-        float out = gDelayBuffer[(gWritePointer - gOffset + gDelayBuffer.size()) % gDelayBuffer.size()]; // use modulo to browse circular buffer!
-        // in the case of an offset equivalent to 0.5 s (max delay),
-        // the modulo will wrap back the value to the original gWritePointer position (oldest sample)
+        // Read the output from the buffer, at the location expressed by the offset
+        float outLeft = delayBufferLeftChannel[readPointerLeft];
+        float outRight = delayBufferRightChannel[readPointerRight];
 
-        // Update the circular buffer
-        gDelayBuffer[gWritePointer] = in; // overwrite the buffer at the write pointer
-        gWritePointer++; // move pointer
-        // wrap pointer
-        if(gWritePointer >= gDelayBuffer.size())
-            gWritePointer = 0;
+        // write input and feedback to buffers
+        delayBufferLeftChannel[writePointerLeft] = in + feedback * outLeft;
+        delayBufferRightChannel[writePointerRight] = in + feedback * outRight;
 
-        // Write the input and output to different channels
-        audioWrite(context, n, 0, in);
-        audioWrite(context, n, 1, out);
+        // increment pointers
+        writePointerLeft++;
+        writePointerRight++;
+        readPointerLeft++;
+        readPointerRight++;
+
+        // wrap pointers if need be
+        if (writePointerLeft >= delayBufferLeftChannel.size()) {
+            writePointerLeft = 0;
+        } else if (writePointerRight >= delayBufferRightChannel.size()) {
+            writePointerRight = 0;
+        } else if (readPointerLeft >= delayBufferLeftChannel.size()) {
+            readPointerLeft = 0;
+        } else if (readPointerRight >= delayBufferRightChannel.size()) {
+            readPointerRight = 0;
+        }
+
+        // Write the L and R different channels
+        audioWrite(context, n, 0, outLeft);
+        audioWrite(context, n, 1, outRight);
     }
 }
 
