@@ -7,8 +7,6 @@
 
 http://bela.io
 
-C++ Real-Time Audio Programming with Bela - Lecture 11: Circular buffers
-circular-buffer: template code for implementing delays
 */
 
 #include <Bela.h>
@@ -59,8 +57,13 @@ void render(BelaContext *context, void *userData)
 {
     for(unsigned int n = 0; n < context->audioFrames; n++) {
         // read delay times from trimmers (L in input1, R in input2)
-        float delayLeft = analogRead(context, n/2, 0);  // read in analog 0
-        float delayRight = analogRead(context, n/2, 1); // read in analog 1
+        float input0 = analogRead(context, n/2, 0);  // read in analog 0
+        float input1 = analogRead(context, n/2, 1); // read in analog 1
+
+        // map delay times to normal ranges - 1ms to 1000ms
+        float delayLeft = map(input0, 0, 3.3 / 4.096, 0.01, 1);
+        float delayRight = map(input1, 0, 3.3 / 4.096, 0.01, 1);
+
         int delayInSampsLeft = delayLeft * context->audioSampleRate;
         int delayInSampsRight = delayRight * context->audioSampleRate;
 
@@ -69,14 +72,23 @@ void render(BelaContext *context, void *userData)
         readPointerRight = (writePointerRight - delayInSampsRight + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
 
         // read feedback from trimmer
-        float feedback = analogRead(context, n/2, 2); // read in analog 2
+        float input2 = analogRead(context, n/2, 2); // read in analog 2
+
+        // read wet/dry mix from trimmer
+        float input3 = analogRead(context, n/2, 3); // read in analog 3
+
+        // map feedback and mix values to normal ranges (0 to 1)
+        float feedback = map(input2, 0, 3.3 / 4.096, 0, 1);
+        float wetFactor = map(input3, 3.3 / 4.096, 0, 1);
+
+        float dryFactor = 1.0f - wetFactor;
 
         // process input sample
         float in = gPlayer.process();
 
         // Read the output from the buffer, at the location expressed by the offset
-        float outLeft = delayBufferLeftChannel[readPointerLeft];
-        float outRight = delayBufferRightChannel[readPointerRight];
+        float outLeft = delayBufferLeftChannel[readPointerLeft] * dryFactor * wetFactor;
+        float outRight = delayBufferRightChannel[readPointerRight] * dryFactor * wetFactor;
 
         // write input and feedback to buffers
         delayBufferLeftChannel[writePointerLeft] = in + feedback * outLeft;
