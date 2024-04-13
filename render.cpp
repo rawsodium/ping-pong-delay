@@ -78,17 +78,17 @@ void render(BelaContext *context, void *userData)
         float input3 = analogRead(context, n/2, 3); // read in analog 3
 
         // map feedback and mix values to normal ranges (0 to 1)
-        float feedback = map(input2, 0, 3.3 / 4.096, 0, 1);
-        float wetFactor = map(input3, 3.3 / 4.096, 0, 1);
+        float feedback = map(input2, 0, 3.3 / 4.096, 0, 0.99);
+        float wetFactor = map(input3, 0, 3.3 / 4.096, 0, 1);
 
         float dryFactor = 1.0f - wetFactor;
 
         // process input sample
         float in = gPlayer.process();
 
-        // Read the output from the buffer, at the location expressed by the offset
-        float outLeft = delayBufferLeftChannel[readPointerLeft] * dryFactor * wetFactor;
-        float outRight = delayBufferRightChannel[readPointerRight] * dryFactor * wetFactor;
+        // Read the output from the buffer
+        float outLeft = in * dryFactor + delayBufferLeftChannel[readPointerLeft] * wetFactor;
+        float outRight = in * dryFactor + delayBufferRightChannel[readPointerRight] * wetFactor;
 
         // write input and feedback to buffers
         delayBufferLeftChannel[writePointerLeft] = in + feedback * outLeft;
