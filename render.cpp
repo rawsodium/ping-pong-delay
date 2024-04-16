@@ -53,9 +53,24 @@ bool setup(BelaContext *context, void *userData)
     return true;
 }
 
+// calculates output with fractional read pointer.
+float processFractionalOut(std::vector<float> buf, int readPtr) {
+    int indexBelow = floorf(readPtr);
+    int indexAbove = indexBelow + 1;
+    if(indexAbove >= buf.size())
+        indexAbove = 0;
+
+    float fractionAbove = readPtr - indexBelow;
+    float fractionBelow = 1.0 - fractionAbove;
+
+    return fractionBelow * buf[indexBelow] + fractionAbove * buf[indexAbove];
+}
+
 void render(BelaContext *context, void *userData)
 {
     for(unsigned int n = 0; n < context->audioFrames; n++) {
+        // TODO: use fractional read ptr somewhere... tbd
+
         // read delay times from trimmers (L in input1, R in input2)
         float input0 = analogRead(context, n/2, 0);  // read in analog 0
         float input1 = analogRead(context, n/2, 1); // read in analog 1
@@ -86,9 +101,22 @@ void render(BelaContext *context, void *userData)
         // process input sample
         float in = gPlayer.process();
 
+        // read at fractional place in delay buffers
+        /*
+         * this does not work... if you substitute delayBufferLeftChannel[readPointerLeft]
+         * and delayBufferRightChannel[readPointerRight] for their respective variables here, you will cause
+         * some nasty high-pitched audio artifacts that will require you to restart Bela. I do not recommend
+         */
+        //float delayBufLeft = processFractionalOut(delayBufferLeftChannel, readPointerLeft);
+        //float delayBufRight = processFractionalOut(delayBufferRightChannel, readPointerRight);
+
         // Read the output from the buffer
         float outLeft = in * dryFactor + delayBufferLeftChannel[readPointerLeft] * wetFactor;
         float outRight = in * dryFactor + delayBufferRightChannel[readPointerRight] * wetFactor;
+
+        // this is literally to make the crunchiness less harsh, you should comment these out
+        outLeft *= 0.25;
+        outRight *= 0.25;
 
         // write input and feedback to buffers
         delayBufferLeftChannel[writePointerLeft] = in + feedback * outLeft;
