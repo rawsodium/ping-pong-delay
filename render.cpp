@@ -42,23 +42,11 @@ float thirdPrevDelayR = 0.0;
 float prevDelayInSampsL = 0.0;
 float prevDelayInSampsR = 0.0;
 
-// Filter state and coefficients
-//float gA1 = 0.0, gA2 = 0.0;
-//float gB0 = 1.0, gB1 = 0.0, gB2 = 0.0;
-
-// float gPrevInLeft = 0.0;
-// float gPrev2InLeft = 0.0;
-// float gPrevInRight = 0.0;
-// float gPrev2InRight = 0.0;
-// float gPrevOutLeft = 0.0;
-// float gPrev2OutLeft = 0.0;
-// float gPrevOutRight = 0.0;
-// float gPrev2OutRight = 0.0;
-
 float delayLeft = 0.0;
 float delayRight = 0.0;
 float feedback = 0.0;
 float wetFactor = 0.0;
+float volume = 1.0;
 
 int indexAboveLeft = 0;
 int indexAboveRight = 0;
@@ -71,10 +59,17 @@ float fractionBelowRight = 0.0;
 
 float in = 0.0;
 
+// store current and last button states
+int currentButtonStatus = HIGH;
+int lastButtonStatus = HIGH;
+
+// button pin
+const int kButtonPin = 6;
 
 // use lp filter on L and R channels to cut noise... hopefully
 Biquad lpLeft;
 Biquad lpRight;
+
 
 bool setup(BelaContext *context, void *userData)
 {
@@ -109,8 +104,6 @@ bool setup(BelaContext *context, void *userData)
     readPointerLeft = (writePointerLeft - (int)(0.1 * context->audioSampleRate) + delayBufferLeftChannel.size()) % delayBufferLeftChannel.size();
     readPointerRight = (writePointerRight - (int)(0.1 * context->audioSampleRate) + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
 
-    // Calculate initial coefficients for lowpass filter
-    //calculate_coefficients(context->audioSampleRate, 10000, 0.707);
     return true;
 }
 
@@ -135,13 +128,18 @@ void render(BelaContext *context, void *userData)
     readPointerRight = (writePointerRight - avgDISR  + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
 
     for(unsigned int n = 0; n < context->audioFrames; n++) {
-        // read delay times from trimmers (L in input1, R in input2)
+        // check for a button press
+        currentButtonStatus = digitalRead(context, n, kButtonPin);
+
+        // read delay times from trimmers (L in input0, R in input1)
         float input0 = analogRead(context, n/2, 0); // read in analog 0
         float input1 = analogRead(context, n/2, 1); // read in analog 1
         // read feedback from trimmer
         float input2 = analogRead(context, n/2, 2); // read in analog 2
         // read wet/dry mix from trimmer
         float input3 = analogRead(context, n/2, 3); // read in analog 3
+        // volume control
+        float input4 = analogRead(context, n/2, 4); // read in analog 4
 
         // map delay times to normal ranges - 1ms to 500ms
         delayLeft = map(input0, 0, 3.3 / 4.096, 0.01, 0.5);
@@ -154,15 +152,6 @@ void render(BelaContext *context, void *userData)
         secondPrevDelayR = prevDelayR;
         prevDelayR = delayRight;
 
-        //rt_printf("avg Delay left: %f\n", averagedDelayLeft);
-        // could try using prev. delay value to calculate avg, and then hopefully cut down on distortion
-        //int delayInSampsLeft = delayLeft * context->audioSampleRate;
-        //int delayInSampsRight = delayRight * context->audioSampleRate;
-
-        //int delayInSampsLeft = averagedDelayLeft * context->audioSampleRate;
-        //int delayInSampsRight = averagedDelayRight * context->audioSampleRate;
-
-
         prevDelayInSampsL = delayInSampsLeft;
         prevDelayInSampsR = delayInSampsRight;
 
@@ -170,14 +159,21 @@ void render(BelaContext *context, void *userData)
         feedback = map(input2, 0, 3.3 / 4.096, 0, 0.75);
         wetFactor = map(input3, 0, 3.3 / 4.096, 0, 1.0);
 
+        // map volume
+        volume = map(input4, 0, 3.3 / 4.096, 0, 1);
+
         float dryFactor = 1.0f - wetFactor;
 
         // process input sample
-        in = gPlayer.process();
+        // change input based on button press
+        if (currentButtonStatus == LOW && lastButtonStatus == HIGH) {
+            in = gPlayer.process();
+        } else {
+            in = audioRead(context, n/2, 0);
+        }
+        lastButtonStatus = currentButtonStatus;
 
         // read at fractional place in delay buffers
-        // float delayBufLeft = delayBufferLeftChannel[readPointerLeft];
-        // float delayBufLeft = processFractionalOut(delayBufferLeftChannel, readPointerLeft);
         indexBelowLeft = floorf(readPointerLeft);
         indexAboveLeft = indexBelowLeft + 1;
         if(indexAboveLeft >= delayBufferLeftChannel.size())
@@ -196,12 +192,7 @@ void render(BelaContext *context, void *userData)
 
         float delayBufRight = fractionBelowRight * delayBufferRightChannel[indexBelowRight] + fractionAboveRight * delayBufferRightChannel[indexAboveRight];
 
-        //float delayBufRight = delayBufferRightChannel[readPointerRight];
-
         // Read the output from the buffer, at the location expressed by the offset
-        //float outLeft = in * dryFactor + delayBufLeft * wetFactor;
-        //float outRight = in * dryFactor + delayBufRight * wetFactor;
-
         float outLeft = in * dryFactor + delayBufRight * wetFactor;
         float outRight = in * dryFactor + delayBufLeft * wetFactor;
 
@@ -227,27 +218,12 @@ void render(BelaContext *context, void *userData)
         }
 
 
-        // TODO: implement filter equation and prepare taps for next iteration
-        // outLeft = ((gB0 * outLeft) + (gB1 * gPrevInLeft) + (gB2 * gPrev2InLeft)) - ((gA1 * gPrevOutLeft) + (gA2 * gPrev2OutLeft));
-        // gPrev2OutLeft = gPrevOutLeft;
-        // gPrevOutLeft = outLeft;
-
-        // gPrev2InLeft = gPrevInLeft;
-        // gPrevInLeft = outLeft;
-
-        // outRight = ((gB0 * outRight) + (gB1 * gPrevInRight) + (gB2 * gPrev2InRight)) - ((gA1 * gPrevOutRight) + (gA2 * gPrev2OutRight));
-        // gPrev2OutRight = gPrevOutRight;
-        // gPrevOutRight = outRight;
-
-        // gPrev2InRight = gPrevInRight;
-        // gPrevInRight = outRight;
-
         outLeft = lpLeft.process(outLeft);
         outRight = lpRight.process(outRight);
 
         // attenuate output for right now while we cut distortion
-        //outLeft *= 0.5;
-        //outRight *= 0.5;
+        outLeft *= volume;
+        outRight *= volume;
 
         // Write the L and R different channels
         audioWrite(context, n, 0, outLeft);
