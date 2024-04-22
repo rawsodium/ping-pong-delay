@@ -12,6 +12,7 @@ http://bela.io
 #include <Bela.h>
 #include <vector>
 #include <cmath>
+#include <libraries/Biquad/Biquad.h>
 #include "MonoFilePlayer.h"
 
 // Name of the sound file (in project folder)
@@ -42,31 +43,38 @@ float prevDelayInSampsL = 0.0;
 float prevDelayInSampsR = 0.0;
 
 // Filter state and coefficients
-float gA1 = 0.0, gA2 = 0.0;
-float gB0 = 1.0, gB1 = 0.0, gB2 = 0.0;
+//float gA1 = 0.0, gA2 = 0.0;
+//float gB0 = 1.0, gB1 = 0.0, gB2 = 0.0;
 
-float gPrevInLeft = 0.0;
-float gPrev2InLeft = 0.0;
-float gPrevInRight = 0.0;
-float gPrev2InRight = 0.0;
-float gPrevOutLeft = 0.0;
-float gPrev2OutLeft = 0.0;
-float gPrevOutRight = 0.0;
-float gPrev2OutRight = 0.0;
+// float gPrevInLeft = 0.0;
+// float gPrev2InLeft = 0.0;
+// float gPrevInRight = 0.0;
+// float gPrev2InRight = 0.0;
+// float gPrevOutLeft = 0.0;
+// float gPrev2OutLeft = 0.0;
+// float gPrevOutRight = 0.0;
+// float gPrev2OutRight = 0.0;
 
-// calculate coefficients for LPF
-void calculate_coefficients(float sampleRate, float frequency, float q)
-{
-    float k = tanf(M_PI * frequency / sampleRate);
-    float norm = 1.0 / (1 + k / q + k * k);
+float delayLeft = 0.0;
+float delayRight = 0.0;
+float feedback = 0.0;
+float wetFactor = 0.0;
 
-    gB0 = k * k * norm;
-    gB1 = 2.0 * gB0;
-    gB2 = gB0;
-    gA1 = 2 * (k * k - 1) * norm;
-    gA2 = (1 - k / q + k * k) * norm;
-}
+int indexAboveLeft = 0;
+int indexAboveRight = 0;
+int indexBelowLeft = 0;
+int indexBelowRight = 0;
+float fractionAboveLeft = 0.0;
+float fractionAboveRight = 0.0;
+float fractionBelowLeft = 0.0;
+float fractionBelowRight = 0.0;
 
+float in = 0.0;
+
+
+// use lp filter on L and R channels to cut noise... hopefully
+Biquad lpLeft;
+Biquad lpRight;
 
 bool setup(BelaContext *context, void *userData)
 {
@@ -85,17 +93,47 @@ bool setup(BelaContext *context, void *userData)
     delayBufferLeftChannel.resize(0.75 * context->audioSampleRate);
     delayBufferRightChannel.resize(0.75 * context->audioSampleRate);
 
+    // settings for filters
+    Biquad::Settings settings{ .fs = context->audioSampleRate, .type = Biquad::lowpass};
+
+    // setup filter with proper parameters
+    lpLeft.setup(settings);
+    lpLeft.setQ(0.71);
+    lpLeft.setPeakGain(1.0);
+
+    lpRight.setup(settings);
+    lpRight.setQ(0.71);
+    lpRight.setPeakGain(1.0);
+
     // set initial delay to 0.1 seconds on each side, for now.
     readPointerLeft = (writePointerLeft - (int)(0.1 * context->audioSampleRate) + delayBufferLeftChannel.size()) % delayBufferLeftChannel.size();
     readPointerRight = (writePointerRight - (int)(0.1 * context->audioSampleRate) + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
 
     // Calculate initial coefficients for lowpass filter
-    calculate_coefficients(context->audioSampleRate, 10000, 0.707);
+    //calculate_coefficients(context->audioSampleRate, 10000, 0.707);
     return true;
 }
 
 void render(BelaContext *context, void *userData)
 {
+    // set center frequency of each notch filter
+    lpLeft.setFc(820);
+    lpRight.setFc(820);
+
+    // average the current and last three delay values read from the trimmers, to reduce jittering
+    float averagedDelayLeft = (delayLeft + prevDelayL + secondPrevDelayL + thirdPrevDelayL) / 4.0;
+    float averagedDelayRight = (delayRight + prevDelayR + secondPrevDelayR + thirdPrevDelayR) / 4.0;
+
+    int delayInSampsLeft = averagedDelayLeft * context->audioSampleRate;
+    int delayInSampsRight = averagedDelayRight * context->audioSampleRate;
+
+    int avgDISL = (delayInSampsLeft + prevDelayInSampsL) / 2;
+    int avgDISR = (delayInSampsRight + prevDelayInSampsR) / 2;
+
+    // use modulo to browse circular buffers
+    readPointerLeft = (writePointerLeft - avgDISL  + delayBufferLeftChannel.size()) % delayBufferLeftChannel.size();
+    readPointerRight = (writePointerRight - avgDISR  + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
+
     for(unsigned int n = 0; n < context->audioFrames; n++) {
         // read delay times from trimmers (L in input1, R in input2)
         float input0 = analogRead(context, n/2, 0); // read in analog 0
@@ -106,12 +144,8 @@ void render(BelaContext *context, void *userData)
         float input3 = analogRead(context, n/2, 3); // read in analog 3
 
         // map delay times to normal ranges - 1ms to 500ms
-        float delayLeft = map(input0, 0, 3.3 / 4.096, 0.01, 0.5);
-        float delayRight = map(input1, 0, 3.3 / 4.096, 0.01, 0.5);
-
-        // average the current and last three delay values read from the trimmers, to reduce distortion
-        float averagedDelayLeft = (delayLeft + prevDelayL + secondPrevDelayL + thirdPrevDelayL) / 4.0;
-        float averagedDelayRight = (delayRight + prevDelayR + secondPrevDelayR + thirdPrevDelayR) / 4.0;
+        delayLeft = map(input0, 0, 3.3 / 4.096, 0.01, 0.5);
+        delayRight = map(input1, 0, 3.3 / 4.096, 0.01, 0.5);
 
         thirdPrevDelayL = secondPrevDelayL;
         secondPrevDelayL = prevDelayL;
@@ -120,50 +154,54 @@ void render(BelaContext *context, void *userData)
         secondPrevDelayR = prevDelayR;
         prevDelayR = delayRight;
 
-        // calculate delay in samples for left and right channels
-        int delayInSampsLeft = averagedDelayLeft * context->audioSampleRate;
-        int delayInSampsRight = averagedDelayRight * context->audioSampleRate;
+        //rt_printf("avg Delay left: %f\n", averagedDelayLeft);
+        // could try using prev. delay value to calculate avg, and then hopefully cut down on distortion
+        //int delayInSampsLeft = delayLeft * context->audioSampleRate;
+        //int delayInSampsRight = delayRight * context->audioSampleRate;
 
-        // average current delay in samples and previous delay in samples to reduce distortion
-        int avgDISL = (delayInSampsLeft + prevDelayInSampsL) / 2;
-        int avgDISR = (delayInSampsRight + prevDelayInSampsR) / 2;
+        //int delayInSampsLeft = averagedDelayLeft * context->audioSampleRate;
+        //int delayInSampsRight = averagedDelayRight * context->audioSampleRate;
+
 
         prevDelayInSampsL = delayInSampsLeft;
         prevDelayInSampsR = delayInSampsRight;
 
-        // use modulo to browse circular buffers
-        readPointerLeft = (writePointerLeft - avgDISL + delayBufferLeftChannel.size()) % delayBufferLeftChannel.size();
-        readPointerRight = (writePointerRight - avgDISR + delayBufferRightChannel.size()) % delayBufferRightChannel.size();
-
         // map feedback and mix values to normal ranges (0 to 1)
-        float feedback = map(input2, 0, 3.3 / 4.096, 0, 0.75);
-        float wetFactor = map(input3, 0, 3.3 / 4.096, 0, 1.0);
+        feedback = map(input2, 0, 3.3 / 4.096, 0, 0.75);
+        wetFactor = map(input3, 0, 3.3 / 4.096, 0, 1.0);
 
         float dryFactor = 1.0f - wetFactor;
 
         // process input sample
-        float in = gPlayer.process();
+        in = gPlayer.process();
 
         // read at fractional place in delay buffers
-        int indexBelowLeft = floorf(readPointerLeft);
-        int indexAboveLeft = indexBelowLeft + 1;
+        // float delayBufLeft = delayBufferLeftChannel[readPointerLeft];
+        // float delayBufLeft = processFractionalOut(delayBufferLeftChannel, readPointerLeft);
+        indexBelowLeft = floorf(readPointerLeft);
+        indexAboveLeft = indexBelowLeft + 1;
         if(indexAboveLeft >= delayBufferLeftChannel.size())
             indexAboveLeft = 0;
-        float fractionAboveLeft = readPointerLeft - indexBelowLeft;
-        float fractionBelowLeft = 1.0 - fractionAboveLeft;
+        fractionAboveLeft = readPointerLeft - indexBelowLeft;
+        fractionBelowLeft = 1.0 - fractionAboveLeft;
 
         float delayBufLeft = fractionBelowLeft * delayBufferLeftChannel[indexBelowLeft] + fractionAboveLeft * delayBufferLeftChannel[indexAboveLeft];
 
-        int indexBelowRight = floorf(readPointerRight);
-        int indexAboveRight = indexBelowRight + 1;
+        indexBelowRight = floorf(readPointerRight);
+        indexAboveRight = indexBelowRight + 1;
         if(indexAboveRight >= delayBufferRightChannel.size())
             indexAboveRight = 0;
-        float fractionAboveRight = readPointerRight - indexBelowRight;
-        float fractionBelowRight = 1.0 - fractionAboveRight;
+        fractionAboveRight = readPointerRight - indexBelowRight;
+        fractionBelowRight = 1.0 - fractionAboveRight;
 
         float delayBufRight = fractionBelowRight * delayBufferRightChannel[indexBelowRight] + fractionAboveRight * delayBufferRightChannel[indexAboveRight];
 
-        // feed left channel into right and vice versa
+        //float delayBufRight = delayBufferRightChannel[readPointerRight];
+
+        // Read the output from the buffer, at the location expressed by the offset
+        //float outLeft = in * dryFactor + delayBufLeft * wetFactor;
+        //float outRight = in * dryFactor + delayBufRight * wetFactor;
+
         float outLeft = in * dryFactor + delayBufRight * wetFactor;
         float outRight = in * dryFactor + delayBufLeft * wetFactor;
 
@@ -188,24 +226,28 @@ void render(BelaContext *context, void *userData)
             readPointerRight = 0;
         }
 
-        // LPF on left and right outputs
-        outLeft = ((gB0 * outLeft) + (gB1 * gPrevInLeft) + (gB2 * gPrev2InLeft)) - ((gA1 * gPrevOutLeft) + (gA2 * gPrev2OutLeft));
-        gPrev2OutLeft = gPrevOutLeft;
-        gPrevOutLeft = outLeft;
 
-        gPrev2InLeft = gPrevInLeft;
-        gPrevInLeft = outLeft;
+        // TODO: implement filter equation and prepare taps for next iteration
+        // outLeft = ((gB0 * outLeft) + (gB1 * gPrevInLeft) + (gB2 * gPrev2InLeft)) - ((gA1 * gPrevOutLeft) + (gA2 * gPrev2OutLeft));
+        // gPrev2OutLeft = gPrevOutLeft;
+        // gPrevOutLeft = outLeft;
 
-        outRight = ((gB0 * outRight) + (gB1 * gPrevInRight) + (gB2 * gPrev2InRight)) - ((gA1 * gPrevOutRight) + (gA2 * gPrev2OutRight));
-        gPrev2OutRight = gPrevOutRight;
-        gPrevOutRight = outRight;
+        // gPrev2InLeft = gPrevInLeft;
+        // gPrevInLeft = outLeft;
 
-        gPrev2InRight = gPrevInRight;
-        gPrevInRight = outRight;
+        // outRight = ((gB0 * outRight) + (gB1 * gPrevInRight) + (gB2 * gPrev2InRight)) - ((gA1 * gPrevOutRight) + (gA2 * gPrev2OutRight));
+        // gPrev2OutRight = gPrevOutRight;
+        // gPrevOutRight = outRight;
+
+        // gPrev2InRight = gPrevInRight;
+        // gPrevInRight = outRight;
+
+        outLeft = lpLeft.process(outLeft);
+        outRight = lpRight.process(outRight);
 
         // attenuate output for right now while we cut distortion
-        outLeft *= 0.5;
-        outRight *= 0.5;
+        //outLeft *= 0.5;
+        //outRight *= 0.5;
 
         // Write the L and R different channels
         audioWrite(context, n, 0, outLeft);
